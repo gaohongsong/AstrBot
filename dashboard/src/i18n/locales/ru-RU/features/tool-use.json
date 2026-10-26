@@ -12,18 +12,37 @@
     },
     "mcpServers": {
         "title": "MCP Сервера",
+        "description": "Управление MCP-серверами",
         "buttons": {
             "refresh": "Обновить",
             "add": "Добавить сервер",
+            "connect": "Подключить",
+            "disconnect": "Отключить",
             "useTemplateStdio": "Шаблон Stdio",
             "useTemplateStreamableHttp": "Шаблон Streamable HTTP",
             "useTemplateSse": "Шаблон SSE",
             "sync": "Синхронизировать"
         },
         "empty": "MCP-сервера не найдены. Нажмите «Добавить сервер».",
+        "searchPlaceholder": "Поиск MCP-серверов...",
+        "noSearchResult": "Подходящие MCP-серверы не найдены",
+        "select": "Выбрать",
+        "selectServer": "Выбрать сервер {name}",
+        "selectAll": "Выбрать все",
+        "clearSelection": "Снять выбор",
+        "deleteSelected": "Удалить выбранные ({count})",
+        "cancel": "Отмена",
+        "batchDeleteTitle": "Удалить MCP-серверы",
+        "batchDeleteMessage": "Удалить выбранные MCP-серверы ({count})? Это действие нельзя отменить.",
+        "batchDeleteConfirm": "Удалить ({count})",
+        "batchDeleteSuccess": "Удалено MCP-серверов: {count}",
+        "batchDeletePartial": "Удалено: {succeeded}, ошибок: {failed}",
         "status": {
+            "installed": "Установленные",
             "noTools": "Нет доступных инструментов",
             "availableTools": "Доступные инструменты",
+            "connected": "Подключен",
+            "disconnected": "Не подключен",
             "configSummary": "Конфигурация: {keys}",
             "noConfig": "Конфигурация не задана"
         }
@@ -38,6 +57,9 @@
         "description": "Описание функции",
         "parameters": "Параметры",
         "noParameters": "У этого инструмента нет параметров",
+        "filter": {
+            "showBuiltin": "Показать встроенные"
+        },
         "table": {
             "paramName": "Параметр",
             "type": "Тип",
@@ -45,7 +67,27 @@
             "required": "Обяз.",
             "origin": "Источник",
             "originName": "Имя источника",
+            "readonly": "Только чтение",
+            "permission": "Доступ",
+            "permissionAdmin": "Админ",
+            "permissionMember": "Все",
+            "permissionEveryone": "Все",
+            "permissionBuiltin": "Встроенный",
             "actions": "Действия"
+        },
+        "configTags": {
+            "tooltipTitle": "Этот инструмент включен в файле конфигурации {config}, потому что:",
+            "conditions": {
+                "truthy": "{key} включен",
+                "equals": "{key} = {expected}",
+                "in": "{key} соответствует {expected}",
+                "fallback": "Текущее значение {key}: {actual}"
+            }
+        },
+        "summary": {
+            "total": "Всего",
+            "active": "Активно",
+            "inactive": "Неактивно"
         }
     },
     "marketplace": {
@@ -70,7 +112,7 @@
             "fields": {
                 "name": "Название сервера",
                 "nameRequired": "Название обязательно",
-                "enable": "Включить сервер",
+                "enable": "Подключить после сохранения",
                 "config": "Конфигурация сервера"
             },
             "errors": {
@@ -85,7 +127,8 @@
                 "sync": "Синхронизировать"
             },
             "tips": {
-                "timeoutConfig": "Тайм-аут вызова инструментов настраивается отдельно на странице конфигурации"
+                "timeoutConfig": "Тайм-аут вызова инструментов настраивается отдельно на странице конфигурации",
+                "transportRecommendation": "Рекомендуется сначала использовать режим Streamable HTTP или SSE. Режим stdio запускает локальный процесс на хосте AstrBot и подходит только для доверенных MCP-серверов."
             }
         },
         "serverDetail": {
@@ -97,43 +140,7 @@
                 "importConfig": "Импортировать конфиг"
             }
         },
-        "confirmDelete": "Вы уверены, что хотите удалить сервер «{name}»?",
-        "syncProvider": {
-            "title": "Синхронизация MCP",
-            "subtitle": "Загрузка конфигурации MCP-серверов от провайдера",
-            "steps": {
-                "selectProvider": "Шаг 1: Провайдер",
-                "configureAuth": "Шаг 2: Авторизация",
-                "syncServers": "Шаг 3: Синхронизация"
-            },
-            "providers": {
-                "modelscope": "ModelScope",
-                "description": "ModelScope — это сообщество моделей с открытым исходным кодом, предоставляющее различные MCP-сервера для AI-сервисов"
-            },
-            "fields": {
-                "provider": "Выберите провайдера",
-                "accessToken": "Токен доступа",
-                "tokenRequired": "Токен обязателен",
-                "tokenHint": "Введите ваш токен доступа ModelScope"
-            },
-            "buttons": {
-                "cancel": "Отмена",
-                "previous": "Назад",
-                "next": "Далее",
-                "sync": "Начать",
-                "getToken": "Получить токен"
-            },
-            "status": {
-                "selectProvider": "Пожалуйста, выберите провайдера MCP-серверов",
-                "enterToken": "Введите токен для продолжения",
-                "readyToSync": "Готов к синхронизации"
-            },
-            "messages": {
-                "syncSuccess": "MCP-сервера успешно синхронизированы!",
-                "syncError": "Ошибка синхронизации: {error}",
-                "tokenHelp": "Как получить токен ModelScope? Нажмите кнопку справа для инструкции"
-            }
-        }
+        "confirmDelete": "Вы уверены, что хотите удалить сервер «{name}»?"
     },
     "messages": {
         "getServersError": "Ошибка получения списка серверов: {error}",
@@ -153,7 +160,11 @@
         "configParseError": "Ошибка разбора конфигурации: {error}",
         "noAvailableConfig": "Конфигурация отсутствует",
         "toggleToolSuccess": "Статус инструмента изменен!",
+        "toggleToolReadonly": "Встроенные инструменты доступны только для чтения и не могут быть включены или выключены.",
         "toggleToolError": "Не удалось изменить статус: {error}",
+        "updateToolPermissionSuccess": "Доступ к {name} обновлён",
+        "updateToolPermissionFailed": "Не удалось обновить доступ к инструменту",
+        "updateToolPermissionBuiltin": "Встроенные инструменты не поддерживают настройку доступа.",
         "testError": "Ошибка теста связи: {error}"
     },
     "syncProvider": {

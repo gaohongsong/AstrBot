@@ -1,7 +1,22 @@
 <template>
-  <div class="w-100">
+  <div class="w-100" :class="{ 'config-field--full-width': itemMeta?.full_width }">
     <!-- Special handling for specific metadata types -->
-    <template v-if="itemMeta?._special === 'select_provider'">
+    <template v-if="itemMeta?._special === 'umo'">
+      <UmoSelector
+        :model-value="modelValue"
+        :multiple="itemMeta?.type === 'list'"
+        :readonly="Boolean(itemMeta?.readonly)"
+        @update:model-value="emitUpdate"
+      />
+    </template>
+    <template v-else-if="itemMeta?._special === 'sender_id'">
+      <SenderSelector
+        :model-value="modelValue"
+        :readonly="Boolean(itemMeta?.readonly)"
+        @update:model-value="emitUpdate"
+      />
+    </template>
+    <template v-else-if="itemMeta?._special === 'select_provider'">
       <ProviderSelector :model-value="modelValue" @update:model-value="emitUpdate" :provider-type="'chat_completion'" />
     </template>
     <template v-else-if="itemMeta?._special === 'select_provider_stt'">
@@ -16,14 +31,6 @@
         @update:model-value="emitUpdate"
         :provider-type="'chat_completion'"
         :multiple="true"
-      />
-    </template>
-    <template v-else-if="getSpecialName(itemMeta?._special) === 'select_agent_runner_provider'">
-      <ProviderSelector
-        :model-value="modelValue"
-        @update:model-value="emitUpdate"
-        :provider-type="'agent_runner'"
-        :provider-subtype="getSpecialSubtype(itemMeta?._special)"
       />
     </template>
     <template v-else-if="itemMeta?._special === 'provider_pool'">
@@ -44,6 +51,19 @@
     </template>
     <template v-else-if="itemMeta?._special === 't2i_template'">
       <T2ITemplateEditor />
+    </template>
+    <template v-else-if="itemMeta?._special === 'dashboard_totp_manager'">
+      <DashboardTotpManager
+        :model-value="Boolean(modelValue)"
+        :config-root="configRoot"
+        @update:model-value="emitUpdate"
+      />
+    </template>
+    <template v-else-if="itemMeta?._special === 'local_permission_matrix'">
+      <LocalPermissionMatrix
+        :model-value="modelValue"
+        @update:model-value="emitUpdate"
+      />
     </template>
     <template v-else-if="itemMeta?._special === 'get_embedding_dim'">
       <div class="d-flex align-center gap-2">
@@ -71,7 +91,7 @@
 
     <div
       v-else-if="itemMeta?.type === 'list' && itemMeta?.options && itemMeta?.render_type === 'checkbox'"
-      class="d-flex flex-wrap gap-20"
+      class="checkbox-group d-flex flex-wrap"
     >
       <v-checkbox
         v-for="(option, optionIndex) in itemMeta.options"
@@ -80,17 +100,21 @@
         @update:model-value="emitUpdate"
         :label="getLabel(itemMeta, optionIndex, option)"
         :value="option"
-        class="mr-2"
+        class="config-checkbox"
         color="primary"
+        density="compact"
         hide-details
       ></v-checkbox>
     </div>
 
-    <v-combobox
+    <v-autocomplete
       v-else-if="itemMeta?.type === 'list' && itemMeta?.options"
       :model-value="modelValue"
-      @update:model-value="emitUpdate"
-      :items="itemMeta.options"
+      @update:model-value="val => { emitUpdate(val); listSearchText = '' }"
+      v-model:search="listSearchText"
+      :items="listSelectItems"
+      item-title="title"
+      item-value="value"
       :disabled="itemMeta?.readonly"
       density="compact"
       variant="outlined"
@@ -98,7 +122,7 @@
       hide-details
       chips
       multiple
-    ></v-combobox>
+    ></v-autocomplete>
 
     <v-select
       v-else-if="itemMeta?.options"
@@ -132,37 +156,48 @@
       v-else-if="itemMeta?.type === 'string'"
       :model-value="modelValue"
       @update:model-value="emitUpdate"
+      :type="stringInputType"
+      :append-inner-icon="secretToggleIcon"
+      :autocomplete="itemMeta?.secret ? 'new-password' : undefined"
+      @click:append-inner="secretVisible = !secretVisible"
       density="compact"
       variant="outlined"
       class="config-field"
       hide-details
     ></v-text-field>
 
-    <div
-      v-else-if="itemMeta?.type === 'int' || itemMeta?.type === 'float'"
-      class="d-flex align-center gap-3"
-    >
-      <v-slider
-        v-if="itemMeta?.slider"
-        :model-value="toNumber(modelValue)"
-        @update:model-value="val => emitUpdate(toNumber(val))"
-        :min="itemMeta?.slider?.min ?? 0"
-        :max="itemMeta?.slider?.max ?? 100"
-        :step="itemMeta?.slider?.step ?? 1"
-        color="primary"
-        density="compact"
-        hide-details
-        style="flex: 1"
-      ></v-slider>
+    <div v-else-if="itemMeta?.type === 'int' || itemMeta?.type === 'float'" class="d-flex align-center gap-3">
+      <div v-if="itemMeta?.slider" style="flex: 3; display: flex; align-items: center; gap: 8px">
+        <span style="min-width: 5px; text-align: right;">
+          {{ itemMeta?.slider?.min ?? 0 }}
+        </span>
+
+        <v-slider :model-value="toNumber(numericTemp ?? modelValue)"
+          @update:model-value="val => { numericTemp = val; emitUpdate(toNumber(val)) }"
+          @end="numericTemp = null"
+          :min="itemMeta?.slider?.min ?? 0"
+          :max="itemMeta?.slider?.max ?? 100"
+          :step="itemMeta?.slider?.step ?? 1"
+          color="primary"
+          density="compact"
+          hide-details
+          style="flex: 1"></v-slider>
+
+        <span style="min-width: 5px; text-align: left;">
+          {{ itemMeta?.slider?.max ?? 100 }}
+        </span>
+      </div>
+
       <v-text-field
-        :model-value="modelValue"
-        @update:model-value="val => emitUpdate(toNumber(val))"
+        :model-value="numericTemp ?? modelValue"
+        @update:model-value="val => (numericTemp = val)"
+        @blur="() => { if (numericTemp != null) { emitUpdate(toNumber(numericTemp)) } numericTemp = null }"
         density="compact"
         variant="outlined"
         class="config-field"
         type="number"
         hide-details
-        style="flex: 1"
+        style="flex: 2"
       ></v-text-field>
     </div>
 
@@ -200,6 +235,7 @@
       v-else-if="itemMeta?.type === 'list'"
       :model-value="modelValue"
       @update:model-value="emitUpdate"
+      :secret="Boolean(itemMeta?.secret)"
       class="config-field"
     />
 
@@ -207,6 +243,9 @@
       v-else-if="itemMeta?.type === 'dict'"
       :model-value="modelValue"
       :item-meta="itemMeta"
+      :plugin-name="pluginName"
+      :plugin-i18n="pluginI18n"
+      :config-key="configKey"
       @update:model-value="emitUpdate"
       class="config-field"
     />
@@ -215,6 +254,10 @@
       v-else
       :model-value="modelValue"
       @update:model-value="emitUpdate"
+      :type="stringInputType"
+      :append-inner-icon="secretToggleIcon"
+      :autocomplete="itemMeta?.secret ? 'new-password' : undefined"
+      @click:append-inner="secretVisible = !secretVisible"
       density="compact"
       variant="outlined"
       class="config-field"
@@ -224,8 +267,10 @@
 </template>
 
 <script setup>
-import { VueMonacoEditor } from '@guolao/vue-monaco-editor'
+import { LazyMonacoEditor as VueMonacoEditor } from '@/components/shared/LazyMonacoEditor';
 import ListConfigItem from './ListConfigItem.vue'
+import SenderSelector from './SenderSelector.vue'
+import UmoSelector from './UmoSelector.vue'
 import FileConfigItem from './FileConfigItem.vue'
 import ObjectEditor from './ObjectEditor.vue'
 import ProviderSelector from './ProviderSelector.vue'
@@ -233,7 +278,15 @@ import PersonaSelector from './PersonaSelector.vue'
 import KnowledgeBaseSelector from './KnowledgeBaseSelector.vue'
 import PluginSetSelector from './PluginSetSelector.vue'
 import T2ITemplateEditor from './T2ITemplateEditor.vue'
+import DashboardTotpManager from './DashboardTotpManager.vue'
+import LocalPermissionMatrix from './LocalPermissionMatrix.vue'
+import { computed, ref } from 'vue'
 import { useI18n, useModuleI18n } from '@/i18n/composables'
+import { usePluginI18n } from '@/utils/pluginI18n'
+
+const numericTemp = ref(null)
+const listSearchText = ref('')
+const secretVisible = ref(false)
 
 const props = defineProps({
   modelValue: {
@@ -248,6 +301,10 @@ const props = defineProps({
     type: String,
     default: ''
   },
+  pluginI18n: {
+    type: Object,
+    default: () => ({})
+  },
   configKey: {
     type: String,
     default: ''
@@ -259,20 +316,78 @@ const props = defineProps({
   showFullscreenBtn: {
     type: Boolean,
     default: false
+  },
+  configRoot: {
+    type: Object,
+    default: null
   }
 })
 
 const emit = defineEmits(['update:modelValue', 'get-embedding-dim', 'open-fullscreen'])
 const { t } = useI18n()
 const { getRaw } = useModuleI18n('features/config-metadata')
+const { configText } = usePluginI18n()
 
-function emitUpdate(val) {
+async function emitUpdate(val) {
+  val = validateNumericConfig(props.itemMeta?.type, val)
+  if (
+    props.itemMeta?._special === 'agent_runner_type'
+    && props.configRoot?.agent_runner
+    && props.itemMeta?.runner_defaults?.[val]
+  ) {
+    props.configRoot.agent_runner.config = JSON.parse(
+      JSON.stringify(props.itemMeta.runner_defaults[val])
+    )
+  }
   emit('update:modelValue', val)
+
 }
+
+const listSelectItems = computed(() =>
+  props.itemMeta?.type === 'list' && props.itemMeta?.options
+    ? getSelectItems(props.itemMeta)
+    : []
+)
+
+const stringInputType = computed(() =>
+  props.itemMeta?.secret && !secretVisible.value ? 'password' : 'text'
+)
+const secretToggleIcon = computed(() => {
+  if (!props.itemMeta?.secret) return undefined
+  return secretVisible.value ? 'mdi-eye-off-outline' : 'mdi-eye-outline'
+})
 
 function toNumber(val) {
   const n = parseFloat(val)
   return isNaN(n) ? 0 : n
+}
+
+function validateNumericConfig(modelType, rawValue) {
+  if (modelType === 'int' || modelType === 'float') {
+    // 如果有滑动条定义，应用边界限制
+    const slider = props.itemMeta?.slider
+    if (slider) {
+      const min = slider.min ?? 0
+      const max = slider.max ?? 100
+      return Math.max(min, Math.min(max, rawValue))
+    } else {
+      return rawValue
+    }
+  } else if (modelType === 'dict') {
+    Object.entries(rawValue).forEach(([key, value]) => {
+      const templatesSchema = props.itemMeta?.template_schema
+      const templateType = templatesSchema?.[key]?.type
+      const templateSlider = templatesSchema?.[key]?.slider
+      if ((templateType === 'int' || templateType === 'float') && templateSlider) {
+        const min = templateSlider.min ?? 0
+        const max = templateSlider.max ?? 100
+        rawValue[key] = Math.max(min, Math.min(max, value))
+      }
+    })
+    return rawValue
+  } else {
+    return rawValue
+  }
 }
 
 function getLabel(itemMeta, index, option) {
@@ -281,6 +396,17 @@ function getLabel(itemMeta, index, option) {
 }
 
 function getTranslatedLabels(itemMeta) {
+  if (
+    props.pluginName
+    && props.configKey
+    && props.pluginI18n
+    && Object.keys(props.pluginI18n).length > 0
+  ) {
+    const translatedLabels = configText(props.pluginI18n, props.configKey, 'labels', null)
+    if (Array.isArray(translatedLabels)) {
+      return translatedLabels
+    }
+  }
   if (!itemMeta?.labels) return null
   if (typeof itemMeta.labels === 'string') {
     const translatedLabels = getRaw(itemMeta.labels)
@@ -296,33 +422,35 @@ function getTranslatedLabels(itemMeta) {
 
 function getSelectItems(itemMeta) {
   const labels = getTranslatedLabels(itemMeta)
-  if (labels && itemMeta.options) {
+  let subtitles = itemMeta?.subtitles
+  if (
+    props.pluginName
+    && props.configKey
+    && props.pluginI18n
+    && Object.keys(props.pluginI18n).length > 0
+  ) {
+    const translatedSubtitles = configText(props.pluginI18n, props.configKey, 'subtitles', null)
+    if (Array.isArray(translatedSubtitles)) {
+      subtitles = translatedSubtitles
+    }
+  }
+  if (typeof subtitles === 'string') {
+    subtitles = getRaw(subtitles)
+  }
+  if (!Array.isArray(subtitles)) subtitles = null
+
+  if ((labels || subtitles) && itemMeta.options) {
     return itemMeta.options.map((value, index) => ({
-      title: labels[index] || value,
-      value: value
+      title: labels?.[index] || value,
+      value: value,
+      props: {
+        subtitle: typeof subtitles?.[index] === 'string' ? subtitles[index] : undefined
+      }
     }))
   }
   return itemMeta.options || []
 }
 
-function parseSpecialValue(value) {
-  if (!value || typeof value !== 'string') {
-    return { name: '', subtype: '' }
-  }
-  const [name, ...rest] = value.split(':')
-  return {
-    name,
-    subtype: rest.join(':') || ''
-  }
-}
-
-function getSpecialName(value) {
-  return parseSpecialValue(value).name
-}
-
-function getSpecialSubtype(value) {
-  return parseSpecialValue(value).subtype
-}
 </script>
 
 <style scoped>
@@ -349,11 +477,41 @@ function getSpecialSubtype(value) {
   background-color: rgba(0, 0, 0, 0.5);
 }
 
-.gap-20 {
-  gap: 20px;
+.checkbox-group {
+  gap: 6px 12px;
+}
+
+.config-checkbox {
+  margin-right: 0;
+}
+
+.config-checkbox :deep(.v-selection-control) {
+  min-height: 28px;
+}
+
+.config-checkbox :deep(.v-selection-control__wrapper) {
+  width: 18px;
+  height: 18px;
+}
+
+.config-checkbox :deep(.v-icon) {
+  font-size: 18px;
+}
+
+.config-checkbox :deep(.v-label) {
+  font-size: 0.9rem;
 }
 
 :deep(.v-field__input) {
   font-size: 14px;
+}
+
+:deep(.config-field input[type='number']::-webkit-inner-spin-button),
+:deep(.config-field input[type='number']::-webkit-outer-spin-button) {
+  -webkit-appearance: none;
+}
+
+:deep(.config-field input[type='number']) {
+  -moz-appearance: textfield;
 }
 </style>

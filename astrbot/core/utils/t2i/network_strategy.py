@@ -1,6 +1,9 @@
 import asyncio
 import logging
 import random
+import re
+from functools import lru_cache
+from pathlib import Path
 
 import aiohttp
 
@@ -12,8 +15,80 @@ from astrbot.core.utils.t2i.template_manager import TemplateManager
 from . import RenderStrategy
 
 ASTRBOT_T2I_DEFAULT_ENDPOINT = "https://t2i.soulter.top/text2img"
+SHIKI_RUNTIME_SCRIPT_ID = "astrbot-t2i-shiki-runtime"
+SHIKI_RUNTIME_TEMPLATE_PATTERN = re.compile(r"\{\{\s*shiki_runtime\s*\|\s*safe\s*\}\}")
+JINJA_SYNTAX_PATTERN = re.compile(r"\{[{%#]")
+JINJA_RAW_OPEN_PATTERN = re.compile(r"{%-?\s*raw\s*-?%}")
+JINJA_RAW_CLOSE_PATTERN = re.compile(r"{%-?\s*endraw\s*-?%}")
 
 logger = logging.getLogger("astrbot")
+
+
+@lru_cache(maxsize=1)
+def get_shiki_runtime() -> str:
+    runtime_path = (
+        Path(__file__).resolve().parent / "template" / "shiki_runtime.iife.js"
+    )
+    if not runtime_path.exists():
+        logger.error(
+            "T2I Shiki runtime not found at %s. Run `cd dashboard && pnpm run build:t2i-shiki-runtime` to regenerate it. Continuing without code highlighting.",
+            runtime_path,
+        )
+        return ""
+
+    try:
+        runtime = runtime_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as err:
+        logger.warning(
+            "Failed to load T2I Shiki runtime from %s: %s. Continuing without code highlighting.",
+            runtime_path,
+            err,
+        )
+        return ""
+
+    return re.sub(r"</(script)", r"<\/\1", runtime, flags=re.IGNORECASE)
+
+
+def _is_inside_jinja_raw_block(tmpl_str: str, index: int) -> bool:
+    raw_open_index = -1
+    for match in JINJA_RAW_OPEN_PATTERN.finditer(tmpl_str, 0, index):
+        raw_open_index = match.start()
+
+    raw_close_index = -1
+    for match in JINJA_RAW_CLOSE_PATTERN.finditer(tmpl_str, 0, index):
+        raw_close_index = match.start()
+
+    return raw_open_index > raw_close_index
+
+
+def _wrap_runtime_for_jinja(tmpl_str: str, script: str, index: int) -> str:
+    if not JINJA_SYNTAX_PATTERN.search(script) or _is_inside_jinja_raw_block(
+        tmpl_str,
+        index,
+    ):
+        return script
+
+    return f"{{% raw %}}{script}{{% endraw %}}"
+
+
+def inject_shiki_runtime(tmpl_str: str) -> str:
+    if SHIKI_RUNTIME_SCRIPT_ID in tmpl_str or SHIKI_RUNTIME_TEMPLATE_PATTERN.search(
+        tmpl_str,
+    ):
+        return tmpl_str
+
+    runtime = get_shiki_runtime()
+    if not runtime:
+        return tmpl_str
+
+    script = f'<script id="{SHIKI_RUNTIME_SCRIPT_ID}">{runtime}</script>'
+    head_close = re.search(r"</head\s*>", tmpl_str, flags=re.IGNORECASE)
+    if head_close:
+        script = _wrap_runtime_for_jinja(tmpl_str, script, head_close.start())
+        return f"{tmpl_str[: head_close.start()]}  {script}\n{tmpl_str[head_close.start() :]}"
+
+    script = _wrap_runtime_for_jinja(tmpl_str, script, 0)
+    return f"{script}\n{tmpl_str}"
 
 
 class NetworkRenderStrategy(RenderStrategy):
@@ -71,12 +146,27 @@ class NetworkRenderStrategy(RenderStrategy):
         tmpl_data: dict,
         return_url: bool = True,
         options: dict | None = None,
+        endpoint: str | None = None,
     ) -> str:
-        """使用自定义文转图模板"""
-        default_options = {"full_page": True, "type": "jpeg", "quality": 40}
+        """使用自定义文转图模板
+
+        Args:
+            endpoint: Optional per-call render service URL. When given, only
+                this endpoint is used instead of the configured endpoint pool.
+        """
+        default_options = {
+            "full_page": True,
+            "type": "jpeg",
+            "quality": 40,
+        }
         if options:
             default_options |= options
 
+        # 在线程池中执行 Shiki 注入，避免 1.2MB JS 处理阻塞事件循环
+        loop = asyncio.get_running_loop()
+        tmpl_str, tmpl_data = await loop.run_in_executor(
+            None, self._prepare_template_sync, tmpl_str, tmpl_data
+        )
         post_data = {
             "tmpl": tmpl_str,
             "json": return_url,
@@ -84,8 +174,13 @@ class NetworkRenderStrategy(RenderStrategy):
             "options": default_options,
         }
 
-        endpoints = self.endpoints.copy() if self.endpoints else [self.BASE_RENDER_URL]
-        random.shuffle(endpoints)
+        if endpoint:
+            endpoints = [self._clean_url(endpoint)]
+        else:
+            endpoints = (
+                self.endpoints.copy() if self.endpoints else [self.BASE_RENDER_URL]
+            )
+            random.shuffle(endpoints)
         last_exception = None
         for endpoint in endpoints:
             try:
@@ -124,14 +219,26 @@ class NetworkRenderStrategy(RenderStrategy):
         text: str,
         return_url: bool = False,
         template_name: str | None = "base",
+        endpoint: str | None = None,
     ) -> str:
         """返回图像的文件路径"""
         if not template_name:
             template_name = "base"
         tmpl_str = await self.get_template(name=template_name)
-        text = text.replace("`", "\\`")
         return await self.render_custom_template(
             tmpl_str,
-            {"text": text, "version": f"v{VERSION}"},
+            {
+                "text": text,
+                "version": f"v{VERSION}",
+            },
             return_url,
+            endpoint=endpoint,
         )
+
+    @staticmethod
+    def _prepare_template_sync(tmpl_str: str, tmpl_data: dict) -> tuple[str, dict]:
+        """在线程池中执行的同步模板预处理（避免阻塞事件循环）"""
+        if SHIKI_RUNTIME_TEMPLATE_PATTERN.search(tmpl_str):
+            tmpl_data = {"shiki_runtime": get_shiki_runtime()} | tmpl_data
+        tmpl_str = inject_shiki_runtime(tmpl_str)
+        return tmpl_str, tmpl_data

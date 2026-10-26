@@ -4,6 +4,8 @@ This module tests the ComputerClient, Booter implementations (local, shipyard, b
 filesystem operations, Python execution, shell execution, and security restrictions.
 """
 
+import os
+import shlex
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +17,6 @@ from astrbot.core.computer.booters.local import (
     LocalFileSystemComponent,
     LocalPythonComponent,
     LocalShellComponent,
-    _ensure_safe_path,
     _is_safe_command,
 )
 
@@ -54,8 +55,11 @@ class TestLocalBooterLifecycle:
     async def test_shutdown(self):
         """Test LocalBooter shutdown method."""
         booter = LocalBooter()
-        # Should not raise any exception
+        booter._shell.shutdown_sessions = AsyncMock()
+
         await booter.shutdown()
+
+        booter._shell.shutdown_sessions.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_available(self):
@@ -126,51 +130,6 @@ class TestSecurityRestrictions:
         for cmd in blocked_commands:
             assert _is_safe_command(cmd) is False, f"Command '{cmd}' should be blocked"
 
-    def test_ensure_safe_path_allowed(self, tmp_path):
-        """Test paths within allowed roots are accepted."""
-        # Create a test directory structure
-        test_file = tmp_path / "test.txt"
-        test_file.write_text("test")
-
-        # Mock get_astrbot_root, get_astrbot_data_path, get_astrbot_temp_path
-        with (
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_root",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_data_path",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_temp_path",
-                return_value=str(tmp_path),
-            ),
-        ):
-            result = _ensure_safe_path(str(test_file))
-            assert result == str(test_file)
-
-    def test_ensure_safe_path_blocked(self, tmp_path):
-        """Test paths outside allowed roots raise PermissionError."""
-        with (
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_root",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_data_path",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_temp_path",
-                return_value=str(tmp_path),
-            ),
-        ):
-            # Try to access a path outside the allowed roots
-            with pytest.raises(PermissionError) as exc_info:
-                _ensure_safe_path("/etc/passwd")
-            assert "Path is outside the allowed computer roots" in str(exc_info.value)
-
 
 class TestLocalShellComponent:
     """Tests for LocalShellComponent."""
@@ -212,18 +171,21 @@ class TestLocalShellComponent:
                 "astrbot.core.computer.booters.local.get_astrbot_root",
                 return_value=str(tmp_path),
             ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_data_path",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_temp_path",
-                return_value=str(tmp_path),
-            ),
         ):
-            # Use python to read file to avoid Windows vs Unix command differences
+            # Build a per-shell command: PowerShell needs the call operator
+            # (&) for quoted, space-containing executables; POSIX shells take
+            # the plain quoted form.
+            if os.name == "nt":
+                command = (
+                    f"& '{sys.executable}' -c \"print(open(r'{test_file}').read())\""
+                )
+            else:
+                command = (
+                    f"{shlex.quote(sys.executable)} -c "
+                    f'"print(open({str(test_file)!r}).read())"'
+                )
             result = await shell.exec(
-                f'python -c "print(open(r\\"{test_file}\\"))"',
+                command,
                 cwd=str(tmp_path),
             )
             assert result["exit_code"] == 0
@@ -232,8 +194,18 @@ class TestLocalShellComponent:
     async def test_exec_with_env(self):
         """Test command execution with custom environment variables."""
         shell = LocalShellComponent()
+        if os.name == "nt":
+            command = (
+                f"& '{sys.executable}' -c "
+                "\"import os; print(os.environ.get('TEST_VAR', ''))\""
+            )
+        else:
+            command = (
+                f"{shlex.quote(sys.executable)} -c "
+                "\"import os; print(os.environ.get('TEST_VAR', ''))\""
+            )
         result = await shell.exec(
-            'python -c "import os; print(os.environ.get(\\"TEST_VAR\\", \\"\\"))"',
+            command,
             env={"TEST_VAR": "test_value"},
         )
         assert result["exit_code"] == 0
@@ -294,14 +266,6 @@ class TestLocalFileSystemComponent:
                 "astrbot.core.computer.booters.local.get_astrbot_root",
                 return_value=str(tmp_path),
             ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_data_path",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_temp_path",
-                return_value=str(tmp_path),
-            ),
         ):
             result = await fs.create_file(str(test_path), "test content")
             assert result["success"] is True
@@ -320,14 +284,6 @@ class TestLocalFileSystemComponent:
                 "astrbot.core.computer.booters.local.get_astrbot_root",
                 return_value=str(tmp_path),
             ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_data_path",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_temp_path",
-                return_value=str(tmp_path),
-            ),
         ):
             result = await fs.read_file(str(test_path))
             assert result["success"] is True
@@ -342,14 +298,6 @@ class TestLocalFileSystemComponent:
         with (
             patch(
                 "astrbot.core.computer.booters.local.get_astrbot_root",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_data_path",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_temp_path",
                 return_value=str(tmp_path),
             ),
         ):
@@ -367,14 +315,6 @@ class TestLocalFileSystemComponent:
         with (
             patch(
                 "astrbot.core.computer.booters.local.get_astrbot_root",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_data_path",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_temp_path",
                 return_value=str(tmp_path),
             ),
         ):
@@ -395,14 +335,6 @@ class TestLocalFileSystemComponent:
                 "astrbot.core.computer.booters.local.get_astrbot_root",
                 return_value=str(tmp_path),
             ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_data_path",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_temp_path",
-                return_value=str(tmp_path),
-            ),
         ):
             result = await fs.delete_file(str(test_dir))
             assert result["success"] is True
@@ -420,14 +352,6 @@ class TestLocalFileSystemComponent:
         with (
             patch(
                 "astrbot.core.computer.booters.local.get_astrbot_root",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_data_path",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_temp_path",
                 return_value=str(tmp_path),
             ),
         ):
@@ -450,14 +374,6 @@ class TestLocalFileSystemComponent:
         with (
             patch(
                 "astrbot.core.computer.booters.local.get_astrbot_root",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_data_path",
-                return_value=str(tmp_path),
-            ),
-            patch(
-                "astrbot.core.computer.booters.local.get_astrbot_temp_path",
                 return_value=str(tmp_path),
             ),
         ):
@@ -484,6 +400,267 @@ class TestComputerBooterBase:
 
 class TestShipyardBooter:
     """Tests for ShipyardBooter."""
+
+    @pytest.mark.asyncio
+    async def test_shipyard_shell_unwraps_bay_exec_response(self):
+        """Bay exec responses keep shell output under the data field."""
+        from astrbot.core.computer.booters.shipyard import ShipyardShellWrapper
+
+        raw_shell = MagicMock()
+        raw_shell.exec = AsyncMock(
+            return_value={
+                "success": True,
+                "data": {
+                    "success": True,
+                    "return_code": 0,
+                    "stdout": "hello_from_shipyard_bay\n/workspace\n",
+                    "stderr": "",
+                    "pid": 16,
+                    "process_id": None,
+                    "error": None,
+                },
+                "error": None,
+            },
+        )
+
+        result = await ShipyardShellWrapper(raw_shell).exec(
+            "echo hello_from_shipyard_bay && pwd"
+        )
+
+        assert result["stdout"] == "hello_from_shipyard_bay\n/workspace\n"
+        assert result["stderr"] == ""
+        assert result["exit_code"] == 0
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_shipyard_shell_keeps_flat_exec_response_compatible(self):
+        """Flat shell responses remain compatible with ShipyardShellWrapper."""
+        from astrbot.core.computer.booters.shipyard import ShipyardShellWrapper
+
+        raw_shell = MagicMock()
+        raw_shell.exec = AsyncMock(
+            return_value={
+                "success": True,
+                "stdout": "hello_from_legacy_shell\n/workspace\n",
+                "stderr": "",
+                "exit_code": 0,
+                "execution_id": "exec-legacy",
+                "execution_time_ms": 45,
+                "command": "echo hello_from_legacy_shell && pwd",
+            },
+        )
+
+        result = await ShipyardShellWrapper(raw_shell).exec(
+            "echo hello_from_legacy_shell && pwd"
+        )
+
+        assert result == {
+            "stdout": "hello_from_legacy_shell\n/workspace\n",
+            "stderr": "",
+            "exit_code": 0,
+            "success": True,
+            "execution_id": "exec-legacy",
+            "execution_time_ms": 45,
+            "command": "echo hello_from_legacy_shell && pwd",
+        }
+
+    @pytest.mark.asyncio
+    async def test_shipyard_shell_maps_nonzero_return_code(self):
+        """A non-zero Bay return_code is exposed as exit_code and failure."""
+        from astrbot.core.computer.booters.shipyard import ShipyardShellWrapper
+
+        raw_shell = MagicMock()
+        raw_shell.exec = AsyncMock(
+            return_value={
+                "success": True,
+                "data": {
+                    "success": False,
+                    "return_code": 3,
+                    "stdout": "",
+                    "stderr": "oops",
+                },
+                "error": None,
+            },
+        )
+
+        result = await ShipyardShellWrapper(raw_shell).exec("echo oops >&2; exit 3")
+
+        assert result["stdout"] == ""
+        assert result["stderr"] == "oops"
+        assert result["exit_code"] == 3
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_shipyard_shell_failure_without_success_field(self):
+        """A nonzero return code without `success` is reported as a failure."""
+        from astrbot.core.computer.booters.shipyard import ShipyardShellWrapper
+
+        raw_shell = MagicMock()
+        raw_shell.exec = AsyncMock(
+            return_value={"data": {"return_code": 1, "stdout": "", "stderr": ""}}
+        )
+
+        result = await ShipyardShellWrapper(raw_shell).exec("false")
+
+        assert result["exit_code"] == 1
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_shipyard_shell_keeps_envelope_error(self):
+        """A nested `data.error = None` must not hide the envelope error."""
+        from astrbot.core.computer.booters.shipyard import ShipyardShellWrapper
+
+        raw_shell = MagicMock()
+        raw_shell.exec = AsyncMock(
+            return_value={
+                "success": False,
+                "data": {
+                    "success": False,
+                    "return_code": 1,
+                    "stdout": "",
+                    "stderr": "",
+                    "error": None,
+                },
+                "error": "Ship returned 500: exec failed",
+            },
+        )
+
+        result = await ShipyardShellWrapper(raw_shell).exec("false")
+
+        assert result["stderr"] == "Ship returned 500: exec failed"
+        assert result["exit_code"] == 1
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_shipyard_file_tools_unwrap_bay_exec_response(self):
+        """Bay file responses keep their payload under the data field too."""
+        from astrbot.core.computer.booters.shipyard import (
+            ShipyardFileSystemWrapper,
+        )
+
+        raw_fs = MagicMock()
+        raw_fs.read_file = AsyncMock(
+            return_value={
+                "success": True,
+                "data": {"content": "hello-file", "path": "probe.txt", "size": 10},
+                "error": None,
+            },
+        )
+        raw_fs.list_dir = AsyncMock(
+            return_value={
+                "success": True,
+                "data": {
+                    "files": [{"name": "probe.txt", "is_file": True}],
+                    "current_path": "/workspace",
+                },
+                "error": None,
+            },
+        )
+
+        wrapper = ShipyardFileSystemWrapper(raw_fs, MagicMock())
+
+        read_result = await wrapper.read_file("probe.txt")
+        assert read_result["content"] == "hello-file"
+        assert "data" not in read_result
+
+        list_result = await wrapper.list_dir(".")
+        assert list_result["files"] == [{"name": "probe.txt", "is_file": True}]
+        assert list_result["current_path"] == "/workspace"
+        assert "data" not in list_result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "kwargs", "inner"),
+        [
+            (
+                "create_file",
+                {"path": "probe.txt", "content": "hello-file"},
+                {"success": True, "path": "probe.txt", "size": 10},
+            ),
+            (
+                "write_file",
+                {"path": "probe.txt", "content": "hello-file"},
+                {"success": True, "path": "probe.txt", "bytes_written": 10},
+            ),
+            (
+                "delete_file",
+                {"path": "probe.txt"},
+                {"success": True, "path": "probe.txt"},
+            ),
+            (
+                "edit_file",
+                {"path": "probe.txt", "old_string": "a", "new_string": "b"},
+                {"success": True, "replacements": 1},
+            ),
+        ],
+    )
+    async def test_shipyard_remaining_file_tools_unwrap_bay_exec_response(
+        self, method, kwargs, inner
+    ):
+        """Every fs wrapper flattens the envelope, not only read_file/list_dir."""
+        from astrbot.core.computer.booters.shipyard import (
+            ShipyardFileSystemWrapper,
+        )
+
+        raw_fs = MagicMock()
+        setattr(
+            raw_fs,
+            method,
+            AsyncMock(return_value={"success": True, "data": inner, "error": None}),
+        )
+
+        wrapper = ShipyardFileSystemWrapper(raw_fs, MagicMock())
+        result = await getattr(wrapper, method)(**kwargs)
+
+        for key, value in inner.items():
+            assert result[key] == value
+        assert "data" not in result
+
+    @pytest.mark.asyncio
+    async def test_shipyard_shell_envelope_failure_wins_over_data_success(self):
+        """A failed request is not reported as a success by data.success."""
+        from astrbot.core.computer.booters.shipyard import ShipyardShellWrapper
+
+        raw_shell = MagicMock()
+        raw_shell.exec = AsyncMock(
+            return_value={
+                "success": False,
+                "data": {
+                    "success": True,
+                    "return_code": 0,
+                    "stdout": "stale-body",
+                    "stderr": "",
+                    "error": None,
+                },
+                "error": "Ship returned 500: exec failed",
+            },
+        )
+
+        result = await ShipyardShellWrapper(raw_shell).exec("echo hi")
+
+        assert result["success"] is False
+        assert result["stderr"] == "Ship returned 500: exec failed"
+
+    @pytest.mark.asyncio
+    async def test_shipyard_shell_envelope_failure_without_data(self):
+        """A request-level failure carrying no `data` is still a failure."""
+        from astrbot.core.computer.booters.shipyard import ShipyardShellWrapper
+
+        raw_shell = MagicMock()
+        raw_shell.exec = AsyncMock(
+            return_value={
+                "success": False,
+                "data": None,
+                "error": "Ship returned 500: exec failed",
+            },
+        )
+
+        result = await ShipyardShellWrapper(raw_shell).exec("echo hi")
+
+        assert result["stdout"] == ""
+        assert result["stderr"] == "Ship returned 500: exec failed"
+        assert result["exit_code"] is None
+        assert result["success"] is False
 
     @pytest.mark.asyncio
     async def test_shipyard_booter_init(self):
@@ -597,6 +774,28 @@ class TestBoxliteBooter:
 class TestComputerClient:
     """Tests for computer_client module functions."""
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("runtime", [None, "none", "local"])
+    async def test_get_booter_requires_explicit_runtime(self, runtime):
+        """An omitted runtime must not start or reuse a computer environment."""
+        from astrbot.core.computer import computer_client
+
+        provider_settings = {} if runtime is None else {"computer_use_runtime": runtime}
+        context = MagicMock()
+        context.get_config.return_value = {"provider_settings": provider_settings}
+        with (
+            patch.object(computer_client, "get_local_booter") as get_local_booter,
+            patch.object(computer_client, "session_booter", {"session": MagicMock()}),
+        ):
+            if runtime == "local":
+                result = await computer_client.get_booter(context, "session")
+                assert result is get_local_booter.return_value
+                get_local_booter.assert_called_once_with()
+            else:
+                with pytest.raises(RuntimeError, match="disabled by configuration"):
+                    await computer_client.get_booter(context, "session")
+                get_local_booter.assert_not_called()
+
     def test_get_local_booter(self):
         """Test get_local_booter returns singleton LocalBooter."""
         from astrbot.core.computer import computer_client
@@ -612,6 +811,20 @@ class TestComputerClient:
 
         # Reset for other tests
         computer_client.local_booter = None
+
+    @pytest.mark.asyncio
+    async def test_shutdown_local_booter_clears_singleton(self):
+        """Test local managed resources are released during lifecycle shutdown."""
+        from astrbot.core.computer import computer_client
+
+        booter = MagicMock(spec=LocalBooter)
+        booter.shutdown = AsyncMock()
+        computer_client.local_booter = booter
+
+        await computer_client.shutdown_local_booter()
+
+        booter.shutdown.assert_awaited_once()
+        assert computer_client.local_booter is None
 
     @pytest.mark.asyncio
     async def test_get_booter_shipyard(self):
@@ -633,7 +846,7 @@ class TestComputerClient:
                     "shipyard_access_token": "test_token",
                     "shipyard_ttl": 3600,
                     "shipyard_max_sessions": 10,
-                }
+                },
             }
         }.get(key, default)
         mock_context.get_config = MagicMock(return_value=mock_config)
@@ -681,7 +894,7 @@ class TestComputerClient:
                 "computer_use_runtime": "sandbox",
                 "sandbox": {
                     "booter": "unknown_type",
-                }
+                },
             }
         }.get(key, default)
         mock_context.get_config = MagicMock(return_value=mock_config)
@@ -707,7 +920,7 @@ class TestComputerClient:
                     "booter": "shipyard",
                     "shipyard_endpoint": "http://localhost:8080",
                     "shipyard_access_token": "test_token",
-                }
+                },
             }
         }.get(key, default)
         mock_context.get_config = MagicMock(return_value=mock_config)
@@ -752,7 +965,7 @@ class TestComputerClient:
                     "booter": "shipyard",
                     "shipyard_endpoint": "http://localhost:8080",
                     "shipyard_access_token": "test_token",
-                }
+                },
             }
         }.get(key, default)
         mock_context.get_config = MagicMock(return_value=mock_config)

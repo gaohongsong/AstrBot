@@ -6,16 +6,25 @@
 from sqlmodel import SQLModel
 
 from astrbot.core.db.po import (
+    ApiKey,
     Attachment,
+    ChatUIProject,
     CommandConfig,
     CommandConflict,
     ConversationV2,
+    CronJob,
+    DashboardTrustedDevice,
     Persona,
     PersonaFolder,
     PlatformMessageHistory,
     PlatformSession,
     PlatformStat,
     Preference,
+    ProviderStat,
+    SessionProjectRelation,
+    UmoAlias,
+    UmoSender,
+    WebChatThread,
 )
 from astrbot.core.knowledge_base.models import (
     KBDocument,
@@ -26,6 +35,7 @@ from astrbot.core.utils.astrbot_path import (
     get_astrbot_config_path,
     get_astrbot_plugin_data_path,
     get_astrbot_plugin_path,
+    get_astrbot_skills_path,
     get_astrbot_t2i_templates_path,
     get_astrbot_temp_path,
     get_astrbot_webchat_path,
@@ -38,15 +48,28 @@ from astrbot.core.utils.astrbot_path import (
 # 主数据库模型类映射
 MAIN_DB_MODELS: dict[str, type[SQLModel]] = {
     "platform_stats": PlatformStat,
+    "provider_stats": ProviderStat,
     "conversations": ConversationV2,
+    "cron_jobs": CronJob,
     "personas": Persona,
     "persona_folders": PersonaFolder,
     "preferences": Preference,
     "platform_message_history": PlatformMessageHistory,
     "platform_sessions": PlatformSession,
+    "webchat_threads": WebChatThread,
+    "chatui_projects": ChatUIProject,
+    "session_project_relations": SessionProjectRelation,
     "attachments": Attachment,
     "command_configs": CommandConfig,
     "command_conflicts": CommandConflict,
+    "umo_aliases": UmoAlias,
+    "umo_senders": UmoSender,
+    "api_keys": ApiKey,
+}
+
+# Device trust must be re-established after restore, never copied from a backup.
+EXCLUDED_MAIN_DB_MODELS: dict[str, type[SQLModel]] = {
+    "dashboard_trusted_devices": DashboardTrustedDevice,
 }
 
 # 知识库元数据模型类映射
@@ -72,6 +95,7 @@ def get_backup_directories() -> dict[str, str]:
         "t2i_templates": get_astrbot_t2i_templates_path(),  # T2I 模板
         "webchat": get_astrbot_webchat_path(),  # WebChat 数据
         "temp": get_astrbot_temp_path(),  # 临时文件
+        "skills": get_astrbot_skills_path(),  # Skills
     }
 
 
